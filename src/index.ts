@@ -7,7 +7,7 @@
  * Captures before/after screenshots of WordPress sites to track visual changes during updates.
  */
 
-import { input, confirm, checkbox } from "@inquirer/prompts";
+import { input, confirm, checkbox, select } from "@inquirer/prompts";
 import {
   buildUrlList,
   normalizeUrl,
@@ -17,7 +17,7 @@ import {
 } from "./wordpress-api";
 import { ScreenshotManager, createProjectFolder } from "./screenshot";
 import { saveReport } from "./report";
-import { ProjectConfig, WPPostType, ComparisonResult } from "./types";
+import { ProjectConfig, WPPostType, ComparisonResult, CookieConfig } from "./types";
 import { compareScreenshots } from "./diff";
 import { exec } from "child_process";
 import * as path from "path";
@@ -302,7 +302,60 @@ async function main(): Promise<void> {
     // Step 4: Create project folder
     const projectFolder = createProjectFolder(domain);
 
-    // Step 5: Build URL list
+    // Step 5: Configure cookie handling
+    console.log("");
+    console.log("We will try to click buttons with the following text if 'Auto-detect' is selected:");
+    console.log([
+        'Alle akzeptieren',
+        'Alles akzeptieren',
+        'Akzeptieren',
+        'Zustimmen',
+        'OK',
+        'Einverstanden',
+        'Verstanden',
+        'Alle Cookies akzeptieren',
+        'Accept',
+        'Accept All',
+        'Accept all cookies',
+        'Agree',
+        'I Agree',
+        'Allow',
+        'Allow all',
+        'Okay',
+        'Got it'
+      ].join(", "));
+    console.log("");
+
+    const cookieMode = await select({
+      message: "How should we handle cookie banners?",
+      choices: [
+        {
+          name: "Auto-detect (Try common English/German buttons)",
+          value: "auto",
+        },
+        {
+          name: "Manual (I will provide the button text)",
+          value: "custom",
+        },
+        {
+          name: "Do nothing (Ignore banner)",
+          value: "none",
+        },
+      ],
+    });
+
+    const cookieConfig: CookieConfig = {
+      mode: cookieMode as "auto" | "custom" | "none",
+    };
+
+    if (cookieMode === "custom") {
+      cookieConfig.customText = await input({
+        message: "Enter the exact text of the cookie banner button:",
+        validate: (value) => (value.trim() ? true : "Please enter the text"),
+      });
+    }
+
+    // Step 6: Build URL list
     console.log("\nFetching URLs to screenshot...");
     const urls = await buildUrlList(siteUrl, 5, selectedPostTypes);
 
@@ -321,14 +374,15 @@ async function main(): Promise<void> {
     const config: ProjectConfig = {
       siteUrl,
       projectFolder,
+      cookieConfig,
       startTime: new Date(),
       urls,
       beforeScreenshots: [],
       afterScreenshots: [],
     };
 
-    // Step 6: Take BEFORE screenshots
-    const screenshotManager = new ScreenshotManager(projectFolder);
+    // Step 7: Take BEFORE screenshots
+    const screenshotManager = new ScreenshotManager(projectFolder, cookieConfig);
     await screenshotManager.init();
 
     config.beforeScreenshots = await screenshotManager.screenshotAll(
@@ -347,7 +401,7 @@ async function main(): Promise<void> {
     console.log(`  ${path.join(projectFolder, "report.html")}`);
     console.log("\n" + "═".repeat(60) + "\n");
 
-    // Step 7: Wait for user to complete update
+    // Step 8: Wait for user to complete update
     const continueToAfter = await confirm({
       message:
         "Have you completed the WordPress update? Ready to take AFTER screenshots?",
@@ -363,7 +417,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Step 8: Take AFTER screenshots
+    // Step 9: Take AFTER screenshots
     config.afterScreenshots = await screenshotManager.screenshotAll(
       urls,
       "after",
@@ -373,7 +427,7 @@ async function main(): Promise<void> {
     // Close browser
     await screenshotManager.close();
 
-    // Step 9: Generate diff comparisons
+    // Step 10: Generate diff comparisons
     config.comparisons = generateDiffComparisons(config);
 
     // Show summary of changes
@@ -388,7 +442,7 @@ async function main(): Promise<void> {
       `\n${totalChanges} of ${config.comparisons.length} pages have visual changes.`,
     );
 
-    // Step 10: Generate final report
+    // Step 11: Generate final report
     const reportPath = saveReport(config);
 
     console.log("\n" + "═".repeat(60));

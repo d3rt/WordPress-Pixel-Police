@@ -6,7 +6,33 @@
 import { chromium, Browser, Page } from 'playwright';
 import * as path from 'path';
 import * as fs from 'fs';
-import { UrlToScreenshot, ScreenshotResult, VIEWPORTS, ViewportType } from './types';
+import { UrlToScreenshot, ScreenshotResult, VIEWPORTS, ViewportType, CookieConfig } from './types';
+
+/**
+ * Common cookie banner button texts (German and English)
+ */
+const COMMON_COOKIE_TEXTS = [
+  // German
+  'Alle akzeptieren',
+  'Alles akzeptieren',
+  'Akzeptieren',
+  'Zustimmen',
+  'OK',
+  'Einverstanden',
+  'Verstanden',
+  'Alle Cookies akzeptieren',
+  
+  // English
+  'Accept',
+  'Accept All',
+  'Accept all cookies',
+  'Agree',
+  'I Agree',
+  'Allow',
+  'Allow all',
+  'Okay',
+  'Got it'
+];
 
 /**
  * Sanitize filename to remove invalid characters
@@ -26,9 +52,11 @@ function sanitizeFilename(name: string): string {
 export class ScreenshotManager {
   private browser: Browser | null = null;
   private projectFolder: string;
+  private cookieConfig: CookieConfig;
 
-  constructor(projectFolder: string) {
+  constructor(projectFolder: string, cookieConfig: CookieConfig) {
     this.projectFolder = projectFolder;
+    this.cookieConfig = cookieConfig;
   }
 
   /**
@@ -57,6 +85,86 @@ export class ScreenshotManager {
   private ensureDir(dir: string): void {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+
+  /**
+   * Handle cookie banner based on configuration
+   */
+  private async handleCookieBanner(page: Page): Promise<void> {
+    if (this.cookieConfig.mode === 'none') {
+      return;
+    }
+
+    console.log('    Checking for cookie banner...');
+
+    // Trigger scroll-based banners
+    try {
+      await page.mouse.wheel(0, 10);
+      await page.waitForTimeout(500);
+    } catch (e) { /* ignore */ }
+
+    const searchTexts = this.cookieConfig.mode === 'custom' && this.cookieConfig.customText
+      ? [this.cookieConfig.customText]
+      : COMMON_COOKIE_TEXTS;
+
+    try {
+      // Try to find and click the cookie button
+      for (const text of searchTexts) {
+        console.log(`    Searching for cookie button with text: "${text}"`);
+        
+        try {
+          // Strategy 1: Playwright's specific role locator (most reliable for actual buttons)
+          // We use explicit matching to avoid accidental clicks on privacy policy links etc.
+          const button = page.getByRole('button', { name: text });
+          if (await button.isVisible({ timeout: 500 })) {
+             await button.click({ timeout: 1000 });
+             console.log(`    Clicked cookie button (role=button): "${text}"`);
+             await page.waitForTimeout(1500); // Wait for animation
+             return;
+          }
+        } catch (e) { /* ignore */ }
+
+        try {
+          // Strategy 2: Exact text match on common clickable elements
+          // specific tags to avoid clicking random paragraphs
+          const element = page.locator(`button:text-is("${text}"), a:text-is("${text}"), [role="button"]:text-is("${text}"), input[type="button"][value="${text}"]`);
+          if (await element.count() > 0 && await element.first().isVisible({ timeout: 500 })) {
+            await element.first().click({ timeout: 1000 });
+            console.log(`    Clicked cookie button (exact text): "${text}"`);
+            await page.waitForTimeout(1500);
+            return;
+          }
+        } catch (e) { /* ignore */ }
+
+        try {
+           // Strategy 3: Loose text match (contains) - high risk of false positives, so we check stricter tags first
+           // Use text= syntax which is robust in Playwright
+           const textLocator = page.locator(`text=${text}`).first();
+           if (await textLocator.isVisible({ timeout: 500 })) {
+             // Check if it's clickable or inside a clickable element
+             await textLocator.click({ timeout: 1000 });
+             console.log(`    Clicked cookie element (text match): "${text}"`);
+             await page.waitForTimeout(1500);
+             return;
+           }
+        } catch (e) { /* ignore */ }
+      }
+      
+      if (this.cookieConfig.mode === 'custom') {
+        console.warn(`    Warning: Could not find any clickable element containing "${this.cookieConfig.customText}"`);
+        // Fallback: Dump visible buttons to help user debug
+        try {
+           const buttons = await page.getByRole('button').allInnerTexts();
+           const visibleButtons = buttons.filter(b => b.trim().length > 0).slice(0, 10);
+           if (visibleButtons.length > 0) {
+             console.log(`    Visible buttons found on page: ${visibleButtons.join(', ')}`);
+           }
+        } catch (e) { /* ignore */ }
+      }
+      
+    } catch (error) {
+      console.warn(`    Warning: Error handling cookie banner: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -118,6 +226,9 @@ export class ScreenshotManager {
       timeout: 60000,
     });
     
+    // Handle cookie banner
+    await this.handleCookieBanner(page);
+
     // Scroll through page to trigger all lazy-loaded images
     await this.scrollToLoadAllContent(page);
     

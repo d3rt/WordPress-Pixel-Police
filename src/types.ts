@@ -64,6 +64,12 @@ export interface DiffResult {
   afterDimensions: { width: number; height: number };
 }
 
+// Cookie configuration
+export interface CookieConfig {
+  mode: 'auto' | 'custom' | 'none';
+  customText?: string;
+}
+
 // Combined screenshot comparison result
 export interface ComparisonResult {
   url: string;
@@ -87,6 +93,7 @@ export interface ComparisonResult {
 export interface ProjectConfig {
   siteUrl: string;
   projectFolder: string;
+  cookieConfig: CookieConfig;
   startTime: Date;
   endTime?: Date;
   urls: UrlToScreenshot[];
